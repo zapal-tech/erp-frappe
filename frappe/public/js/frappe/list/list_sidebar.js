@@ -268,23 +268,23 @@ frappe.views.ListSidebar = class ListSidebar {
 				this.insights_banner.remove();
 			}
 
-			const message = "Get more insights with";
-			const link = "https://frappe.io/s/insights";
-			const cta = "Frappe Insights";
+			// const message = "Get more insights with";
+			// const link = "https://frappe.io/s/insights";
+			// const cta = "Zapal Insights";
 
-			this.insights_banner = $(`
-				<div style="position: relative;">
-					<div class="pr-3">
-						${message} <a href="${link}" target="_blank" style="color: var(--text-color)">${cta} &rarr; </a>
-					</div>
-					<div style="position: absolute; top: -1px; right: -4px; cursor: pointer;" title="Dismiss"
-						onclick="localStorage.setItem('show_insights_banner', 'false') || this.parentElement.remove()">
-						<svg class="icon  icon-sm" style="">
-							<use class="" href="#icon-close"></use>
-						</svg>
-					</div>
-				</div>
-			`).appendTo(this.sidebar);
+			// this.insights_banner = $(`
+			// 	<div style="position: relative;">
+			// 		<div class="pr-3">
+			// 			${message} <a href="${link}" target="_blank" style="color: var(--text-color)">${cta} &rarr; </a>
+			// 		</div>
+			// 		<div style="position: absolute; top: -1px; right: -4px; cursor: pointer;" title="Dismiss"
+			// 			onclick="localStorage.setItem('show_insights_banner', 'false') || this.parentElement.remove()">
+			// 			<svg class="icon  icon-sm" style="">
+			// 				<use class="" href="#icon-close"></use>
+			// 			</svg>
+			// 		</div>
+			// 	</div>
+			// `).appendTo(this.sidebar);
 		} catch (error) {
 			console.error(error);
 		}
