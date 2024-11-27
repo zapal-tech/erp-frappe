@@ -1,8 +1,10 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 # License: MIT. See LICENSE
 
+import base64
 import datetime
 import re
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
@@ -101,7 +103,7 @@ class NamingSeries:
 				# ignore B023: binding `count` is not necessary because
 				# function is evaluated immediately and it can not be done
 				# because of function signature requirement
-				return str(count).zfill(digits)  # noqa: B023
+				return str(count).zfill(digits)
 
 			generated_names.append(parse_naming_series(self.series, doc=doc, number_generator=fake_counter))
 		return generated_names
@@ -262,10 +264,33 @@ def make_autoname(key="", doctype="", doc="", *, ignore_validate=False):
 	                DE/09/01/00001 where 09 is the year, 01 is the month and 00001 is the series
 	"""
 	if key == "hash":
-		return frappe.generate_hash(length=10)
+		return _generate_random_string(10)
 
 	series = NamingSeries(key)
 	return series.generate_next_name(doc, ignore_validate=ignore_validate)
+
+
+def _get_timestamp_prefix():
+	ts = int(time.time() * 10)  # time in deciseconds
+	# we ~~don't need~~ can't get ordering over entire lifetime, so we wrap the time.
+	ts = ts % (32**4)
+	return base64.b32hexencode(ts.to_bytes(length=5, byteorder="big")).decode()[-4:].lower()
+
+
+def _generate_random_string(length=10):
+	"""Better version of frappe.generate_hash for naming.
+
+	This uses entire base32 instead of base16 used by generate_hash. So it has twice as many
+	characters and hence more likely to have shorter common prefixes. i.e. slighly faster comparisons and less conflicts.
+
+	Why not base36?
+	It's not in standard library else using all characters is probably better approach.
+	Why not base64?
+	MySQL is case-insensitive, we can't use both upper and lower case characters.
+	"""
+	from secrets import token_bytes as get_random_bytes
+
+	return base64.b32hexencode(get_random_bytes(length)).decode()[:length].lower()
 
 
 def parse_naming_series(
@@ -465,12 +490,10 @@ def append_number_if_name_exists(doctype, value, fieldname="name", separator="-"
 
 	if exists:
 		last = frappe.db.sql(
-			"""SELECT `{fieldname}` FROM `tab{doctype}`
-			WHERE `{fieldname}` {regex_character} %s
+			f"""SELECT `{fieldname}` FROM `tab{doctype}`
+			WHERE `{fieldname}` {frappe.db.REGEX_CHARACTER} %s
 			ORDER BY length({fieldname}) DESC,
-			`{fieldname}` DESC LIMIT 1""".format(
-				doctype=doctype, fieldname=fieldname, regex_character=frappe.db.REGEX_CHARACTER
-			),
+			`{fieldname}` DESC LIMIT 1""",
 			regex,
 		)
 

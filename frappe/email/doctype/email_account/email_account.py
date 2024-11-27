@@ -4,7 +4,6 @@
 import email.utils
 import functools
 import imaplib
-import socket
 import time
 from datetime import datetime, timedelta
 from poplib import error_proto
@@ -35,14 +34,14 @@ def cache_email_account(cache_name):
 				setattr(frappe.local, cache_name, {})
 
 			cached_accounts = getattr(frappe.local, cache_name)
-			match_by = list(kwargs.values()) + ["default"]
+			match_by = [*list(kwargs.values()), "default"]
 			matched_accounts = list(filter(None, [cached_accounts.get(key) for key in match_by]))
 			if matched_accounts:
 				return matched_accounts[0]
 
 			matched_accounts = func(*args, **kwargs)
 			cached_accounts.update(matched_accounts or {})
-			return matched_accounts and list(matched_accounts.values())[0]
+			return matched_accounts and next(iter(matched_accounts.values()))
 
 		return wrapper_cache_email_account
 
@@ -69,6 +68,7 @@ class EmailAccount(Document):
 		auth_method: DF.Literal["Basic", "OAuth"]
 		auto_reply_message: DF.TextEditor | None
 		awaiting_password: DF.Check
+		backend_app_flow: DF.Check
 		brand_logo: DF.AttachImage | None
 		connected_app: DF.Link | None
 		connected_user: DF.Link | None
@@ -96,7 +96,15 @@ class EmailAccount(Document):
 		password: DF.Password | None
 		send_notification_to: DF.SmallText | None
 		send_unsubscribe_message: DF.Check
-		service: DF.Literal["", "GMail", "Sendgrid", "SparkPost", "Yahoo Mail", "Outlook.com", "Yandex.Mail"]
+		service: DF.Literal[
+			"",
+			"GMail",
+			"Sendgrid",
+			"SparkPost",
+			"Yahoo Mail",
+			"Outlook.com",
+			"Yandex.Mail",
+		]
 		signature: DF.TextEditor | None
 		smtp_port: DF.Data | None
 		smtp_server: DF.Data | None
@@ -189,20 +197,27 @@ class EmailAccount(Document):
 			self.default_incoming = False
 			messages.append(
 				_("{} has been disabled. It can only be enabled if {} is checked.").format(
-					frappe.bold(_("Default Incoming")), frappe.bold(_("Enable Incoming"))
+					frappe.bold(_("Default Incoming")),
+					frappe.bold(_("Enable Incoming")),
 				)
 			)
 		if not self.enable_outgoing and self.default_outgoing:
 			self.default_outgoing = False
 			messages.append(
 				_("{} has been disabled. It can only be enabled if {} is checked.").format(
-					frappe.bold(_("Default Outgoing")), frappe.bold(_("Enable Outgoing"))
+					frappe.bold(_("Default Outgoing")),
+					frappe.bold(_("Enable Outgoing")),
 				)
 			)
 		if messages:
 			if len(messages) == 1:
 				(as_list, messages) = (0, messages[0])
-			frappe.msgprint(messages, as_list=as_list, indicator="orange", title=_("Defaults Updated"))
+			frappe.msgprint(
+				messages,
+				as_list=as_list,
+				indicator="orange",
+				title=_("Defaults Updated"),
+			)
 
 	def on_update(self):
 		"""Check there is only one default of each type."""
@@ -282,7 +297,11 @@ class EmailAccount(Document):
 				"loginfailed",
 			]
 
-			other_error_codes = ["err[auth]", "errtemporaryerror", "loginviayourwebbrowser"]
+			other_error_codes = [
+				"err[auth]",
+				"errtemporaryerror",
+				"loginviayourwebbrowser",
+			]
 
 			all_error_codes = auth_error_codes + other_error_codes
 
@@ -541,10 +560,15 @@ class EmailAccount(Document):
 				frappe.db.rollback()
 			except Exception:
 				frappe.db.rollback()
-				self.log_error(title="EmailAccount.receive")
-				if self.use_imap:
-					self.handle_bad_emails(mail.uid, mail.raw_message, frappe.get_traceback())
-				exceptions.append(frappe.get_traceback())
+				try:
+					self.log_error(title="EmailAccount.receive")
+					if self.use_imap:
+						self.handle_bad_emails(mail.uid, mail.raw_message, frappe.get_traceback())
+					exceptions.append(frappe.get_traceback())
+				except Exception:
+					frappe.db.rollback()
+				else:
+					frappe.db.commit()
 			else:
 				frappe.db.commit()
 
@@ -561,7 +585,15 @@ class EmailAccount(Document):
 				seen_status = messages.get("seen_status", {}).get(uid)
 				if self.email_sync_option != "UNSEEN" or seen_status != "SEEN":
 					# only append the emails with status != 'SEEN' if sync option is set to 'UNSEEN'
-					mails.append(InboundMail(message, self, frappe.safe_decode(uid), seen_status, append_to))
+					mails.append(
+						InboundMail(
+							message,
+							self,
+							frappe.safe_decode(uid),
+							seen_status,
+							append_to,
+						)
+					)
 
 		if not self.enable_incoming:
 			return []
@@ -588,22 +620,31 @@ class EmailAccount(Document):
 		return mails
 
 	def handle_bad_emails(self, uid, raw, reason):
+		"""Save the email in Unhandled Email doctype.
+
+		The excessive encoding and decoding is done to handle the case where the
+		email contains invalid characters. This should fail when parsing, not
+		when storing the email in the database.
+		"""
 		if cint(self.use_imap):
 			import email
 
 			try:
 				if isinstance(raw, bytes):
-					mail = email.message_from_bytes(raw)
+					raw_str = raw.decode("ASCII", "replace")
+					mail = email.message_from_string(raw_str)
 				else:
-					mail = email.message_from_string(raw)
+					raw_str = raw.encode(errors="replace").decode()
+					mail = email.message_from_string(raw_str)
 
 				message_id = mail.get("Message-ID")
 			except Exception:
+				raw_str = "can't be parsed"
 				message_id = "can't be parsed"
 
 			unhandled_email = frappe.get_doc(
 				{
-					"raw": raw,
+					"raw": raw_str,
 					"uid": uid,
 					"reason": reason,
 					"message_id": message_id,
@@ -616,7 +657,9 @@ class EmailAccount(Document):
 
 	def send_auto_reply(self, communication, email):
 		"""Send auto reply if set."""
-		from frappe.core.doctype.communication.email import set_incoming_outgoing_accounts
+		from frappe.core.doctype.communication.email import (
+			set_incoming_outgoing_accounts,
+		)
 
 		if self.enable_auto_reply:
 			set_incoming_outgoing_accounts(communication)
@@ -669,7 +712,10 @@ class EmailAccount(Document):
 			if not self.enable_incoming:
 				frappe.throw(_("Automatic Linking can be activated only if Incoming is enabled."))
 
-			if frappe.db.exists("Email Account", {"enable_automatic_linking": 1, "name": ("!=", self.name)}):
+			if frappe.db.exists(
+				"Email Account",
+				{"enable_automatic_linking": 1, "name": ("!=", self.name)},
+			):
 				frappe.throw(_("Automatic Linking can be activated only for one Email Account."))
 
 	def append_email_to_sent_folder(self, message):
@@ -687,7 +733,12 @@ class EmailAccount(Document):
 	def get_oauth_token(self):
 		if self.auth_method == "OAuth":
 			connected_app = frappe.get_doc("Connected App", self.connected_app)
-			return connected_app.get_active_token(self.connected_user)
+			if self.backend_app_flow:
+				token = connected_app.get_backend_app_token()
+			else:
+				token = connected_app.get_active_token(self.connected_user)
+
+			return token
 
 
 @frappe.whitelist()
@@ -715,7 +766,9 @@ def notify_unreplied():
 	"""Sends email notifications if there are unreplied Communications
 	and `notify_if_unreplied` is set as true."""
 	for email_account in frappe.get_all(
-		"Email Account", "name", filters={"enable_incoming": 1, "notify_if_unreplied": 1}
+		"Email Account",
+		"name",
+		filters={"enable_incoming": 1, "notify_if_unreplied": 1},
 	):
 		email_account = frappe.get_doc("Email Account", email_account.name)
 
@@ -772,15 +825,22 @@ def pull(now=False):
 	doctype = frappe.qb.DocType("Email Account")
 	email_accounts = (
 		frappe.qb.from_(doctype)
-		.select(doctype.name, doctype.auth_method, doctype.connected_app, doctype.connected_user)
+		.select(
+			doctype.name,
+			doctype.auth_method,
+			doctype.connected_app,
+			doctype.connected_user,
+		)
 		.where(doctype.enable_incoming == 1)
 		.where(doctype.awaiting_password == 0)
 		.run(as_dict=1)
 	)
 
 	for email_account in email_accounts:
-		if email_account.auth_method == "OAuth" and not has_token(
-			email_account.connected_app, email_account.connected_user
+		if (
+			email_account.auth_method == "OAuth"
+			and not email_account.backend_app_flow
+			and not has_token(email_account.connected_app, email_account.connected_user)
 		):
 			# don't try to pull from accounts which dont have access token (for Oauth)
 			continue
@@ -810,10 +870,9 @@ def pull_from_email_account(email_account):
 
 
 def get_max_email_uid(email_account):
-	# get maximum uid of emails
-	max_uid = 1
+	"""get maximum uid of emails"""
 
-	result = frappe.get_all(
+	if result := frappe.get_all(
 		"Communication",
 		filters={
 			"communication_medium": "Email",
@@ -821,12 +880,9 @@ def get_max_email_uid(email_account):
 			"email_account": email_account,
 		},
 		fields=["max(uid) as uid"],
-	)
-
-	if not result:
-		return 1
-	else:
+	):
 		return cint(result[0].get("uid", 0)) + 1
+	return 1
 
 
 def setup_user_email_inbox(email_account, awaiting_password, email_id, enable_outgoing, used_oauth):
@@ -858,7 +914,11 @@ def setup_user_email_inbox(email_account, awaiting_password, email_id, enable_ou
 
 		# check if inbox is alreay configured
 		user_inbox = (
-			frappe.db.get_value("User Email", {"email_account": email_account, "parent": user_name}, ["name"])
+			frappe.db.get_value(
+				"User Email",
+				{"email_account": email_account, "parent": user_name},
+				["name"],
+			)
 			or None
 		)
 
@@ -885,7 +945,11 @@ def remove_user_email_inbox(email_account):
 	if not email_account:
 		return
 
-	users = frappe.get_all("User Email", filters={"email_account": email_account}, fields=["parent as name"])
+	users = frappe.get_all(
+		"User Email",
+		filters={"email_account": email_account},
+		fields=["parent as name"],
+	)
 
 	for user in users:
 		doc = frappe.get_doc("User", user.get("name"))

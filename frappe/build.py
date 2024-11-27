@@ -178,9 +178,6 @@ def symlink(target, link_name, overwrite=False):
 	if not overwrite:
 		return os.symlink(target, link_name)
 
-	# os.replace() may fail if files are on different filesystems
-	link_dir = os.path.dirname(link_name)
-
 	# Create link to target with temporary filename
 	while True:
 		temp_link_name = f"tmp{frappe.generate_hash()}"
@@ -251,6 +248,9 @@ def bundle(
 
 	if save_metafiles:
 		command += " --save-metafiles"
+
+	if not apps or apps == "frappe":
+		command += " && cd billing && yarn build"
 
 	check_node_executable()
 	frappe_app_path = frappe.get_app_source_path("frappe")

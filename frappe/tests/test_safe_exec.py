@@ -93,7 +93,7 @@ class TestSafeExec(FrappeTestCase):
 	def test_ensure_getattrable_globals(self):
 		def check_safe(objects):
 			for obj in objects:
-				if isinstance(obj, (types.ModuleType, types.CodeType, types.TracebackType, types.FrameType)):
+				if isinstance(obj, types.ModuleType | types.CodeType | types.TracebackType | types.FrameType):
 					self.fail(f"{obj} wont work in safe exec.")
 				elif isinstance(obj, dict):
 					check_safe(obj.values())
@@ -117,6 +117,11 @@ class TestSafeExec(FrappeTestCase):
 
 		# dont Allow modifying _dict class
 		self.assertRaises(Exception, safe_exec, "_dict.x = 1")
+
+	def test_print(self):
+		test_str = frappe.generate_hash()
+		safe_exec(f"print('{test_str}')")
+		self.assertEqual(frappe.local.debug_log[-1], test_str)
 
 
 class TestNoSafeExec(FrappeTestCase):

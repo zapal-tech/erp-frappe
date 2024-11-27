@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import sys
+import uuid
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -183,7 +184,7 @@ def _make_logs_v1():
 	if frappe.local.message_log:
 		response["_server_messages"] = json.dumps([json.dumps(d) for d in frappe.local.message_log])
 
-	if frappe.debug_log and frappe.conf.get("logging"):
+	if frappe.debug_log:
 		response["_debug_messages"] = json.dumps(frappe.local.debug_log)
 
 	if frappe.flags.error_message:
@@ -196,7 +197,7 @@ def _make_logs_v2():
 	if frappe.local.message_log:
 		response["messages"] = frappe.local.message_log
 
-	if frappe.debug_log and frappe.conf.get("logging"):
+	if frappe.debug_log:
 		response["debug"] = [{"message": m} for m in frappe.local.debug_log]
 
 
@@ -205,7 +206,7 @@ def json_handler(obj):
 	from collections.abc import Iterable
 	from re import Match
 
-	if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+	if isinstance(obj, datetime.date | datetime.datetime | datetime.time):
 		return str(obj)
 
 	elif isinstance(obj, datetime.timedelta):
@@ -231,8 +232,11 @@ def json_handler(obj):
 	elif callable(obj):
 		return repr(obj)
 
+	elif isinstance(obj, uuid.UUID):
+		return str(obj)
+
 	else:
-		raise TypeError(f"""Object of type {type(obj)} with value of {repr(obj)} is not JSON serializable""")
+		raise TypeError(f"""Object of type {type(obj)} with value of {obj!r} is not JSON serializable""")
 
 
 def as_page():
@@ -260,25 +264,13 @@ def download_backup(path):
 
 def download_private_file(path: str) -> Response:
 	"""Checks permissions and sends back private file"""
+	from frappe.core.doctype.file.utils import find_file_by_url
 
 	if frappe.session.user == "Guest":
 		raise Forbidden(_("You don't have permission to access this file"))
 
-	filters = {"file_url": path}
-	if frappe.form_dict.fid:
-		filters["name"] = str(frappe.form_dict.fid)
-
-	files = frappe.get_all("File", filters=filters, fields="*")
-
-	# this file might be attached to multiple documents
-	# if the file is accessible from any one of those documents
-	# then it should be downloadable
-	for file_data in files:
-		file: "File" = frappe.get_doc(doctype="File", **file_data)
-		if file.is_downloadable():
-			break
-
-	else:
+	file = find_file_by_url(path, name=frappe.form_dict.fid)
+	if not file:
 		raise Forbidden(_("You don't have permission to access this file"))
 
 	make_access_log(doctype="File", document=file.name, file_type=os.path.splitext(path)[-1][1:])

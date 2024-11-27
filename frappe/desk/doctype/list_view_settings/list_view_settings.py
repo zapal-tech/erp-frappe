@@ -14,6 +14,7 @@ class ListViewSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		allow_edit: DF.Check
 		disable_auto_refresh: DF.Check
 		disable_comment_count: DF.Check
 		disable_count: DF.Check
@@ -93,7 +94,7 @@ def get_default_listview_fields(doctype):
 	fields = [f.get("fieldname") for f in doctype_json.get("fields") if f.get("in_list_view")]
 
 	if meta.title_field:
-		if not meta.title_field.strip() in fields:
+		if meta.title_field.strip() not in fields:
 			fields.append(meta.title_field.strip())
 
 	return fields

@@ -161,6 +161,26 @@ frappe.ui.Page = class Page {
 		frappe.ui.keys
 			.get_shortcut_group(this.page_actions[0])
 			.add(action_btn, action_btn.find(".actions-btn-group-label"));
+
+		// https://axesslab.com/skip-links
+		this.skip_link_to_main = $("<button>")
+			.addClass("sr-only sr-only-focusable btn btn-primary-light my-2")
+			.text(__("Navigate to main content"))
+			.attr({ tabindex: 0, role: "link" })
+			.on("click", (e) => {
+				e.preventDefault();
+				const main = this.main.get(0);
+				main.setAttribute("tabindex", -1);
+				main.focus();
+				main.addEventListener(
+					"blur",
+					() => {
+						main.removeAttribute("tabindex");
+					},
+					{ once: true }
+				);
+			})
+			.appendTo(this.sidebar);
 	}
 
 	setup_sidebar_toggle() {
@@ -169,7 +189,11 @@ frappe.ui.Page = class Page {
 		if (this.disable_sidebar_toggle || !sidebar_wrapper.length) {
 			sidebar_toggle.last().remove();
 		} else {
-			sidebar_toggle.attr("title", __("Toggle Sidebar")).tooltip({
+			if (!frappe.is_mobile()) {
+				sidebar_toggle.attr("title", __("Toggle Sidebar"));
+			}
+			sidebar_toggle.attr("aria-label", __("Toggle Sidebar"));
+			sidebar_toggle.tooltip({
 				delay: { show: 600, hide: 100 },
 				trigger: "hover",
 			});
@@ -512,10 +536,15 @@ frappe.ui.Page = class Page {
 		}
 		// label
 		if (frappe.utils.is_mac()) {
-			shortcut_obj.shortcut_label = shortcut_obj.shortcut.replace("Ctrl", "⌘");
+			shortcut_obj.shortcut_label = shortcut_obj.shortcut
+				.replace("Ctrl", "⌘")
+				.replace("Alt", "⌥");
 		} else {
 			shortcut_obj.shortcut_label = shortcut_obj.shortcut;
 		}
+
+		shortcut_obj.shortcut_label = shortcut_obj.shortcut_label.replace("Shift", "⇧");
+
 		// actual shortcut string
 		shortcut_obj.shortcut = shortcut_obj.shortcut.toLowerCase();
 		// action is button click
@@ -702,27 +731,6 @@ frappe.ui.Page = class Page {
 	clear_inner_toolbar() {
 		this.inner_toolbar.empty().addClass("hide");
 	}
-
-	//-- Sidebar --//
-
-	add_sidebar_item(label, action, insert_after, prepend) {
-		var parent = this.sidebar.find(".sidebar-menu.standard-actions");
-		var li = $("<li>");
-		var link = $("<a>").html(label).on("click", action).appendTo(li);
-
-		if (insert_after) {
-			li.insertAfter(parent.find(insert_after));
-		} else {
-			if (prepend) {
-				li.prependTo(parent);
-			} else {
-				li.appendTo(parent);
-			}
-		}
-		return link;
-	}
-
-	//---//
 
 	clear_user_actions() {
 		this.menu.find(".user-action").remove();

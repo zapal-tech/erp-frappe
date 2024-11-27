@@ -22,12 +22,14 @@ class FormTimeline extends BaseTimeline {
 	}
 
 	setup_timeline_actions() {
-		this.add_action_button(
-			__("New Email"),
-			() => this.compose_mail(),
-			"es-line-add",
-			"btn-secondary"
-		);
+		if (frappe.model.can_email(null, this.frm)) {
+			this.add_action_button(
+				__("New Email"),
+				() => this.compose_mail(),
+				"es-line-add",
+				"btn-secondary"
+			);
+		}
 		this.setup_new_event_button();
 	}
 
@@ -575,8 +577,8 @@ class FormTimeline extends BaseTimeline {
 			}
 			if (reply_all) {
 				// if reply_all then add cc and bcc as well.
-				args.cc += communication_doc.cc;
-				args.bcc = communication_doc.bcc;
+				args.cc += cstr(communication_doc.cc);
+				args.bcc = cstr(communication_doc.bcc);
 			}
 		}
 

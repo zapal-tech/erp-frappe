@@ -220,9 +220,7 @@ def delete_communication(event, reference_doctype, reference_docname):
 def get_permission_query_conditions(user):
 	if not user:
 		user = frappe.session.user
-	return """(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`={user})""".format(
-		user=frappe.db.escape(user),
-	)
+	return f"""(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`={frappe.db.escape(user)})"""
 
 
 def has_permission(doc, user):
@@ -398,6 +396,9 @@ def get_events(start, end, user=None, for_reminder=False, filters=None) -> list[
 				try:
 					getdate(date)
 				except Exception:
+					# Don't show any message to the user
+					frappe.clear_last_message()
+
 					date = date.split("-")
 					date = date[0] + "-" + str(cint(date[1]) - 1) + "-" + date[2]
 

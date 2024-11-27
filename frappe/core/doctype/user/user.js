@@ -1,4 +1,14 @@
 frappe.ui.form.on("User", {
+	setup: function (frm) {
+		frm.set_query("default_workspace", () => {
+			return {
+				filters: {
+					for_user: ["in", [null, frappe.session.user]],
+					title: ["!=", "Welcome Workspace"],
+				},
+			};
+		});
+	},
 	before_load: function (frm) {
 		let update_tz_options = function () {
 			frm.fields_dict.time_zone.set_data(frappe.all_timezones);
@@ -100,6 +110,11 @@ frappe.ui.form.on("User", {
 	refresh: function (frm) {
 		let doc = frm.doc;
 
+		frappe.xcall("frappe.apps.get_apps").then((r) => {
+			let apps = r?.map((r) => r.name) || [];
+			frm.set_df_property("default_app", "options", [" ", ...apps]);
+		});
+
 		if (frm.is_new()) {
 			frm.set_value("time_zone", frappe.sys_defaults.time_zone);
 		}
@@ -115,6 +130,7 @@ frappe.ui.form.on("User", {
 		}
 
 		frm.toggle_display(["sb1", "sb3", "modules_access"], false);
+		frm.trigger("setup_impersonation");
 
 		if (!frm.is_new()) {
 			if (has_access_to_edit_user()) {
@@ -275,7 +291,7 @@ frappe.ui.form.on("User", {
 			frm.set_df_property("enabled", "read_only", 0);
 		}
 
-		if (frappe.session.user !== "Administrator") {
+		if (frm.doc.name !== "Administrator") {
 			frm.toggle_enable("email", frm.is_new());
 		}
 	},
@@ -344,6 +360,41 @@ frappe.ui.form.on("User", {
 		if (doc.name === frappe.session.user && attr_tuples.some(has_effectively_changed)) {
 			frappe.msgprint(__("Refreshing..."));
 			window.location.reload();
+		}
+	},
+	setup_impersonation: function (frm) {
+		if (frappe.session.user === "Administrator" && frm.doc.name != "Administrator") {
+			frm.add_custom_button(__("Impersonate"), () => {
+				if (frm.doc.restrict_ip) {
+					frappe.msgprint({
+						message:
+							"There's IP restriction for this user, you can not impersonate as this user.",
+						title: "IP restriction is enabled",
+					});
+					return;
+				}
+				frappe.prompt(
+					[
+						{
+							fieldname: "reason",
+							fieldtype: "Small Text",
+							label: "Reason for impersonating",
+							description: __("Note: This will be shared with user."),
+							reqd: 1,
+						},
+					],
+					(values) => {
+						frappe
+							.xcall("frappe.core.doctype.user.user.impersonate", {
+								user: frm.doc.name,
+								reason: values.reason,
+							})
+							.then(() => window.location.reload());
+					},
+					__("Impersonate as {0}", [frm.doc.name]),
+					__("Confirm")
+				);
+			});
 		}
 	},
 });

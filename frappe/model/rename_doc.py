@@ -47,7 +47,7 @@ def update_document_title(
 
 	# TODO: omit this after runtime type checking (ref: https://github.com/frappe/frappe/pull/14927)
 	for obj in [docname, updated_title, updated_name]:
-		if not isinstance(obj, (str, NoneType)):
+		if not isinstance(obj, str | NoneType):
 			frappe.throw(f"{obj=} must be of type str or None")
 
 	# handle bad API usages
@@ -63,7 +63,7 @@ def update_document_title(
 	title_updated = updated_title and (title_field != "name") and (updated_title != doc.get(title_field))
 	name_updated = updated_name and (updated_name != doc.name)
 
-	queue = kwargs.get("queue") or "default"
+	queue = kwargs.get("queue") or "long"
 
 	if name_updated:
 		if action_enqueued:
@@ -86,7 +86,7 @@ def update_document_title(
 				save_point=True,
 			)
 
-			doc.queue_action("rename", name=transformed_name, merge=merge, queue=queue)
+			doc.queue_action("rename", name=transformed_name, merge=merge, queue=queue, timeout=36000)
 		else:
 			doc.rename(updated_name, merge=merge)
 
@@ -119,7 +119,7 @@ def update_document_title(
 def rename_doc(
 	doctype: str | None = None,
 	old: str | None = None,
-	new: str = None,
+	new: str | None = None,
 	force: bool = False,
 	merge: bool = False,
 	ignore_permissions: bool = False,
@@ -170,6 +170,7 @@ def rename_doc(
 			force=force,
 			ignore_permissions=ignore_permissions,
 			ignore_if_exists=ignore_if_exists,
+			old_doc=old_doc,
 		)
 
 	if not merge:
@@ -348,6 +349,7 @@ def validate_rename(
 	ignore_permissions: bool = False,
 	ignore_if_exists: bool = False,
 	save_point=False,
+	old_doc: Document | None = None,
 ) -> str:
 	# using for update so that it gets locked and someone else cannot edit it while this rename is going on!
 	if save_point:
@@ -373,7 +375,11 @@ def validate_rename(
 	if not merge and exists and not ignore_if_exists:
 		frappe.throw(_("Another {0} with name {1} exists, select another name").format(doctype, new))
 
-	if not (ignore_permissions or frappe.permissions.has_permission(doctype, "write", raise_exception=False)):
+	kwargs = {"doctype": doctype, "ptype": "write", "raise_exception": False}
+	if old_doc:
+		kwargs |= {"doc": old_doc}
+
+	if not (ignore_permissions or frappe.permissions.has_permission(**kwargs)):
 		frappe.throw(_("You need write permission to rename"))
 
 	if not (force or ignore_permissions) and not meta.allow_rename:
@@ -390,7 +396,7 @@ def validate_rename(
 
 def rename_doctype(doctype: str, old: str, new: str) -> None:
 	# change options for fieldtype Table, Table MultiSelect and Link
-	fields_with_options = ("Link",) + frappe.model.table_fields
+	fields_with_options = ("Link", *frappe.model.table_fields)
 
 	for fieldtype in fields_with_options:
 		update_options_for_fieldtype(fieldtype, old, new)
@@ -419,6 +425,7 @@ def update_link_field_values(link_fields: list[dict], old: str, new: str, doctyp
 					# update single docs using ORM rather then query
 					# as single docs also sometimes sets defaults!
 					single_doc.flags.ignore_mandatory = True
+					single_doc.flags.ignore_links = True
 					single_doc.save(ignore_permissions=True)
 			except ImportError:
 				# fails in patches where the doctype has been renamed
@@ -456,30 +463,43 @@ def get_link_fields(doctype: str) -> list[dict]:
 		cf = frappe.qb.DocType("Custom Field")
 		ps = frappe.qb.DocType("Property Setter")
 
-		standard_fields = (
+		standard_fields_query = (
 			frappe.qb.from_(df)
 			.inner_join(dt)
 			.on(df.parent == dt.name)
 			.select(df.parent, df.fieldname, dt.issingle.as_("issingle"))
-			.where((df.options == doctype) & (df.fieldtype == "Link") & (dt.is_virtual == 0))
-			.run(as_dict=True)
+			.where((df.options == doctype) & (df.fieldtype == "Link"))
 		)
+
+		if frappe.db.has_column("DocField", "is_virtual"):
+			standard_fields_query = standard_fields_query.where(df.is_virtual == 0)
+
+		virtual_doctypes = []
+		if frappe.db.has_column("DocType", "is_virtual"):
+			virtual_doctypes = frappe.get_all("DocType", {"is_virtual": 1}, pluck="name")
+			standard_fields_query = standard_fields_query.where(dt.is_virtual == 0)
+
+		standard_fields = standard_fields_query.run(as_dict=True)
 
 		cf_issingle = frappe.qb.from_(dt).select(dt.issingle).where(dt.name == cf.dt).as_("issingle")
 		custom_fields = (
 			frappe.qb.from_(cf)
 			.select(cf.dt.as_("parent"), cf.fieldname, cf_issingle)
 			.where((cf.options == doctype) & (cf.fieldtype == "Link"))
-			.run(as_dict=True)
 		)
+		if virtual_doctypes:
+			custom_fields = custom_fields.where(cf.dt.notin(virtual_doctypes))
+		custom_fields = custom_fields.run(as_dict=True)
 
 		ps_issingle = frappe.qb.from_(dt).select(dt.issingle).where(dt.name == ps.doc_type).as_("issingle")
 		property_setter_fields = (
 			frappe.qb.from_(ps)
 			.select(ps.doc_type.as_("parent"), ps.field_name.as_("fieldname"), ps_issingle)
 			.where((ps.property == "options") & (ps.value == doctype) & (ps.field_name.notnull()))
-			.run(as_dict=True)
 		)
+		if virtual_doctypes:
+			property_setter_fields = property_setter_fields.where(ps.doc_type.notin(virtual_doctypes))
+		property_setter_fields = property_setter_fields.run(as_dict=True)
 
 		frappe.flags.link_fields[doctype] = standard_fields + custom_fields + property_setter_fields
 
@@ -628,7 +648,10 @@ def rename_dynamic_links(doctype: str, old: str, new: str):
 	Singles = frappe.qb.DocType("Singles")
 	for df in get_dynamic_link_map().get(doctype, []):
 		# dynamic link in single, just one value to check
-		if frappe.get_meta(df.parent).issingle:
+		meta = frappe.get_meta(df.parent)
+		if meta.is_virtual:
+			continue
+		if meta.issingle:
 			refdoc = frappe.db.get_singles_dict(df.parent)
 			if refdoc.get(df.options) == doctype and refdoc.get(df.fieldname) == old:
 				frappe.qb.update(Singles).set(Singles.value, new).where(

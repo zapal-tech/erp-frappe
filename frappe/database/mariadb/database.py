@@ -97,6 +97,10 @@ class MariaDBExceptionUtil:
 			and isinstance(e, pymysql.IntegrityError)
 		)
 
+	@staticmethod
+	def is_interface_error(e: pymysql.Error):
+		return isinstance(e, pymysql.InterfaceError)
+
 
 class MariaDBConnectionUtil:
 	def get_connection(self):
@@ -116,19 +120,24 @@ class MariaDBConnectionUtil:
 
 	def get_connection_settings(self) -> dict:
 		conn_settings = {
-			"host": self.host,
 			"user": self.user,
-			"password": self.password,
 			"conv": self.CONVERSION_MAP,
 			"charset": "utf8mb4",
 			"use_unicode": True,
 		}
 
-		if self.user not in (frappe.flags.root_login, "root"):
-			conn_settings["database"] = self.user
+		if self.cur_db_name:
+			conn_settings["database"] = self.cur_db_name
 
-		if self.port:
-			conn_settings["port"] = int(self.port)
+		if self.socket:
+			conn_settings["unix_socket"] = self.socket
+		else:
+			conn_settings["host"] = self.host
+			if self.port:
+				conn_settings["port"] = int(self.port)
+
+		if self.password:
+			conn_settings["password"] = self.password
 
 		if frappe.conf.local_infile:
 			conn_settings["local_infile"] = frappe.conf.local_infile
@@ -199,7 +208,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			SUM(`data_length` + `index_length`) / 1024 / 1024 AS `database_size`
 			FROM information_schema.tables WHERE `table_schema` = %s GROUP BY `table_schema`
 			""",
-			self.db_name,
+			self.cur_db_name,
 			as_dict=True,
 		)
 
@@ -289,20 +298,20 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 		)
 
 	def create_global_search_table(self):
-		if not "__global_search" in self.get_tables():
+		if "__global_search" not in self.get_tables():
 			self.sql(
-				"""create table __global_search(
+				f"""create table __global_search(
 				doctype varchar(100),
-				name varchar({0}),
-				title varchar({0}),
+				name varchar({self.VARCHAR_LEN}),
+				title varchar({self.VARCHAR_LEN}),
 				content text,
 				fulltext(content),
-				route varchar({0}),
+				route varchar({self.VARCHAR_LEN}),
 				published int(1) not null default 0,
 				unique `doctype_name` (doctype, name))
 				COLLATE=utf8mb4_unicode_ci
 				ENGINE=MyISAM
-				CHARACTER SET=utf8mb4""".format(self.VARCHAR_LEN)
+				CHARACTER SET=utf8mb4"""
 			)
 
 	def create_user_settings_table(self):
@@ -322,7 +331,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 	def get_table_columns_description(self, table_name):
 		"""Returns list of column and its description"""
 		return self.sql(
-			"""select
+			f"""select
 			column_name as 'name',
 			column_type as 'type',
 			column_default as 'default',
@@ -337,7 +346,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			), 0) as 'index',
 			column_key = 'UNI' as 'unique'
 			from information_schema.columns as columns
-			where table_name = '{table_name}' """.format(table_name=table_name),
+			where table_name = '{table_name}' """,
 			as_dict=1,
 		)
 
@@ -358,8 +367,8 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 
 	def has_index(self, table_name, index_name):
 		return self.sql(
-			"""SHOW INDEX FROM `{table_name}`
-			WHERE Key_name='{index_name}'""".format(table_name=table_name, index_name=index_name)
+			f"""SHOW INDEX FROM `{table_name}`
+			WHERE Key_name='{index_name}'"""
 		)
 
 	def get_column_index(self, table_name: str, fieldname: str, unique: bool = False) -> frappe._dict | None:
@@ -392,7 +401,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			if not clustered_index:
 				return index
 
-	def add_index(self, doctype: str, fields: list, index_name: str = None):
+	def add_index(self, doctype: str, fields: list, index_name: str | None = None):
 		"""Creates an index with given fields if not already created.
 		Index name will be `fieldname1_fieldname2_index`"""
 		index_name = index_name or self.get_index_name(fields)
@@ -400,9 +409,8 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 		if not self.has_index(table_name, index_name):
 			self.commit()
 			self.sql(
-				"""ALTER TABLE `%s`
-				ADD INDEX `%s`(%s)"""
-				% (table_name, index_name, ", ".join(fields))
+				"""ALTER TABLE `{}`
+				ADD INDEX `{}`({})""".format(table_name, index_name, ", ".join(fields))
 			)
 
 	def add_unique(self, doctype, fields, constraint_name=None):
@@ -418,9 +426,8 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 		):
 			self.commit()
 			self.sql(
-				"""alter table `tab%s`
-					add unique `%s`(%s)"""
-				% (doctype, constraint_name, ", ".join(fields))
+				"""alter table `tab{}`
+					add unique `{}`({})""".format(doctype, constraint_name, ", ".join(fields))
 			)
 
 	def updatedb(self, doctype, meta=None):
@@ -438,9 +445,8 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			db_table = MariaDBTable(doctype, meta)
 			db_table.validate()
 
-			self.commit()
 			db_table.sync()
-			self.begin()
+			self.commit()
 
 	def get_database_list(self):
 		return self.sql("SHOW DATABASES", pluck=True)
@@ -524,6 +530,9 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 		from pymysql.cursors import SSCursor
 
 		try:
+			if not self._conn:
+				self.connect()
+
 			original_cursor = self._cursor
 			new_cursor = self._cursor = self._conn.cursor(SSCursor)
 			yield

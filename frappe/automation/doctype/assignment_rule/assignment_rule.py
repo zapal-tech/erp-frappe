@@ -31,8 +31,8 @@ class AssignmentRule(Document):
 		description: DF.SmallText
 		disabled: DF.Check
 		document_type: DF.Link
-		due_date_based_on: DF.Literal
-		field: DF.Literal
+		due_date_based_on: DF.Literal[None]
+		field: DF.Literal[None]
 		last_user: DF.Link | None
 		priority: DF.Int
 		rule: DF.Literal["Round Robin", "Load Balancing", "Based on Field"]
@@ -51,7 +51,9 @@ class AssignmentRule(Document):
 
 	def validate_document_types(self):
 		if self.document_type == "ToDo":
-			frappe.throw(_("Assignment Rule is not allowed on {0} document type").format(frappe.bold("ToDo")))
+			frappe.throw(
+				_("Assignment Rule is not allowed on document type {0}").format(frappe.bold(_("ToDo")))
+			)
 
 	def validate_assignment_days(self):
 		assignment_days = self.get_assignment_days()

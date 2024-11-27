@@ -339,6 +339,15 @@ class TestEmailAccount(FrappeTestCase):
 		email_account.handle_bad_emails(uid=-1, raw=mail_content, reason="Testing")
 		self.assertTrue(frappe.db.get_value("Unhandled Email", {"message_id": message_id}))
 
+	def test_handle_bad_encoding(self):
+		"""If the email has invalid encoding, it should still be saved as an Unhandled Email."""
+		uid = "test invalid encoding"
+		mail_content = b"\x80"  # invalid byte
+
+		email_account = frappe.get_doc("Email Account", "_Test Email Account 1")
+		email_account.handle_bad_emails(uid=uid, raw=mail_content, reason="Testing")
+		self.assertTrue(frappe.db.get_value("Unhandled Email", {"uid": uid}))
+
 	def test_imap_folder(self):
 		# assert tests if imap_folder >= 1 and imap is checked
 		email_account = frappe.get_doc("Email Account", "_Test Email Account 1")
@@ -413,9 +422,12 @@ class TestEmailAccount(FrappeTestCase):
 	@patch("frappe.email.receive.EmailServer.select_imap_folder", return_value=True)
 	@patch("frappe.email.receive.EmailServer.logout", side_effect=lambda: None)
 	def mocked_get_inbound_mails(
-		email_account, messages={}, mocked_logout=None, mocked_select_imap_folder=None
+		email_account, messages=None, mocked_logout=None, mocked_select_imap_folder=None
 	):
 		from frappe.email.receive import EmailServer
+
+		if messages is None:
+			messages = {}
 
 		def get_mocked_messages(**kwargs):
 			return messages.get(kwargs["folder"], {})
@@ -427,7 +439,12 @@ class TestEmailAccount(FrappeTestCase):
 
 	@patch("frappe.email.receive.EmailServer.select_imap_folder", return_value=True)
 	@patch("frappe.email.receive.EmailServer.logout", side_effect=lambda: None)
-	def mocked_email_receive(email_account, messages={}, mocked_logout=None, mocked_select_imap_folder=None):
+	def mocked_email_receive(
+		email_account, messages=None, mocked_logout=None, mocked_select_imap_folder=None
+	):
+		if messages is None:
+			messages = {}
+
 		def get_mocked_messages(**kwargs):
 			return messages.get(kwargs["folder"], {})
 

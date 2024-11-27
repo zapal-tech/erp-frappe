@@ -98,7 +98,11 @@ def is_valid_title(title) -> bool:
 
 def get_license_options() -> list[str]:
 	url = "https://api.github.com/licenses"
-	res = requests.get(url=url)
+	try:
+		res = requests.get(url=url)
+	except requests.exceptions.RequestException:
+		return ["agpl-3.0", "gpl-3.0", "mit", "custom"]
+
 	if res.status_code == 200:
 		res = res.json()
 		ids = [r.get("spdx_id") for r in res]
@@ -109,7 +113,10 @@ def get_license_options() -> list[str]:
 
 def get_license_text(license_name: str) -> str:
 	url = f"https://api.github.com/licenses/{license_name.lower()}"
-	res = requests.get(url=url)
+	try:
+		res = requests.get(url=url)
+	except requests.exceptions.RequestException:
+		return "No license text found"
 	if res.status_code == 200:
 		res = res.json()
 		return res.get("body")
@@ -145,9 +152,7 @@ def _create_app_boilerplate(dest, hooks, no_git=False):
 	with open(os.path.join(dest, hooks.app_name, "README.md"), "w") as f:
 		f.write(
 			frappe.as_unicode(
-				"## {}\n\n{}\n\n#### License\n\n{}".format(
-					hooks.app_title, hooks.app_description, hooks.app_license
-				)
+				f"## {hooks.app_title}\n\n{hooks.app_description}\n\n#### License\n\n{hooks.app_license}"
 			)
 		)
 	license_body = get_license_text(license_name=hooks.app_license)
@@ -272,7 +277,7 @@ class PatchCreator:
 			raise Exception(f"Patch {self.patch_file} already exists")
 
 		*path, _filename = self.patch_file.relative_to(self.app_dir.parents[0]).parts
-		dotted_path = ".".join(path + [self.patch_file.stem])
+		dotted_path = ".".join([*path, self.patch_file.stem])
 
 		patches_txt = self.app_dir / "patches.txt"
 		existing_patches = patches_txt.read_text()
@@ -332,7 +337,22 @@ app_publisher = "{app_publisher}"
 app_description = "{app_description}"
 app_email = "{app_email}"
 app_license = "{app_license}"
+
+# Apps
+# ------------------
+
 # required_apps = []
+
+# Each item in the list will be shown as an app in the apps page
+# add_to_apps_screen = [
+# 	{{
+# 		"name": "{app_name}",
+# 		"logo": "/assets/{app_name}/logo.png",
+# 		"title": "{app_title}",
+# 		"route": "/{app_name}",
+# 		"has_permission": "{app_name}.api.permission.has_app_permission"
+# 	}}
+# ]
 
 # Includes in <head>
 # ------------------
@@ -605,6 +625,11 @@ jobs:
     steps:
       - name: Clone
         uses: actions/checkout@v3
+
+      - name: Find tests
+        run: |
+          echo "Finding tests"
+          grep -rn "def test" > /dev/null
 
       - name: Setup Python
         uses: actions/setup-python@v4

@@ -127,7 +127,10 @@ class Contact(Document):
 			return
 
 		if len([email.email_id for email in self.email_ids if email.is_primary]) > 1:
-			frappe.throw(_("Only one {0} can be set as primary.").format(frappe.bold("Email ID")))
+			frappe.throw(_("Only one {0} can be set as primary.").format(frappe.bold(_("Email ID"))))
+
+		if len(self.email_ids) == 1:
+			self.email_ids[0].is_primary = 1
 
 		primary_email_exists = False
 		for d in self.email_ids:
@@ -256,7 +259,7 @@ def contact_query(doctype, txt, searchfield, start, page_len, filters):
 	link_name = filters.pop("link_name")
 
 	return frappe.db.sql(
-		"""select
+		f"""select
 			`tabContact`.name, `tabContact`.full_name, `tabContact`.company_name
 		from
 			`tabContact`, `tabDynamic Link`
@@ -265,12 +268,12 @@ def contact_query(doctype, txt, searchfield, start, page_len, filters):
 			`tabDynamic Link`.parenttype = 'Contact' and
 			`tabDynamic Link`.link_doctype = %(link_doctype)s and
 			`tabDynamic Link`.link_name = %(link_name)s and
-			`tabContact`.`{key}` like %(txt)s
-			{mcond}
+			`tabContact`.`{searchfield}` like %(txt)s
+			{get_match_cond(doctype)}
 		order by
 			if(locate(%(_txt)s, `tabContact`.full_name), locate(%(_txt)s, `tabContact`.company_name), 99999),
 			`tabContact`.idx desc, `tabContact`.full_name
-		limit %(start)s, %(page_len)s """.format(mcond=get_match_cond(doctype), key=searchfield),
+		limit %(start)s, %(page_len)s """,
 		{
 			"txt": "%" + txt + "%",
 			"_txt": txt.replace("%", ""),
@@ -329,9 +332,13 @@ def get_contact_with_phone_number(number):
 	return contacts[0].parent if contacts else None
 
 
-def get_contact_name(email_id):
-	contact = frappe.get_all("Contact Email", filters={"email_id": email_id}, fields=["parent"], limit=1)
-	return contact[0].parent if contact else None
+def get_contact_name(email_id: str) -> str | None:
+	"""Return the contact ID for the given email ID."""
+	for contact_id in frappe.get_all(
+		"Contact Email", filters={"email_id": email_id, "parenttype": "Contact"}, pluck="parent"
+	):
+		if frappe.db.exists("Contact", contact_id):
+			return contact_id
 
 
 def get_contacts_linking_to(doctype, docname, fields=None):
@@ -386,7 +393,7 @@ def get_contact_display_list(doctype: str, name: str) -> list[dict]:
 			["Dynamic Link", "parenttype", "=", "Contact"],
 		],
 		fields=["*"],
-		order_by="is_primary_contact DESC, creation ASC",
+		order_by="is_primary_contact DESC, `tabContact`.creation ASC",
 	)
 
 	for contact in contact_list:

@@ -22,7 +22,7 @@ import frappe.rate_limiter
 import frappe.recorder
 import frappe.utils.response
 from frappe import _
-from frappe.auth import SAFE_HTTP_METHODS, UNSAFE_HTTP_METHODS, HTTPRequest, validate_auth  # noqa
+from frappe.auth import SAFE_HTTP_METHODS, UNSAFE_HTTP_METHODS, HTTPRequest, validate_auth
 from frappe.middlewares import StaticDataMiddleware
 from frappe.utils import CallbackManager, cint, get_site_name
 from frappe.utils.data import escape_html
@@ -36,7 +36,12 @@ _sites_path = os.environ.get("SITES_PATH", ".")
 
 # If gc.freeze is done then importing modules before forking allows us to share the memory
 if frappe._tune_gc:
+	import gettext
+
+	import babel
+	import babel.messages
 	import bleach
+	import num2words
 	import pydantic
 
 	import frappe.boot
@@ -74,7 +79,6 @@ def after_response_wrapper(app):
 			app(environ, start_response),
 			(
 				frappe.rate_limiter.update,
-				frappe.monitor.stop,
 				frappe.recorder.dump,
 				frappe.request.after_response.run,
 				frappe.destroy,
@@ -295,13 +299,14 @@ def make_form_dict(request: Request):
 		args.update(request.args or {})
 		args.update(request.form or {})
 
-	if not isinstance(args, dict):
+	if isinstance(args, dict):
+		frappe.local.form_dict = frappe._dict(args)
+		# _ is passed by $.ajax so that the request is not cached by the browser. So, remove _ from form_dict
+		frappe.local.form_dict.pop("_", None)
+	elif isinstance(args, list):
+		frappe.local.form_dict["data"] = args
+	else:
 		frappe.throw(_("Invalid request arguments"))
-
-	frappe.local.form_dict = frappe._dict(args)
-
-	# _ is passed by $.ajax so that the request is not cached by the browser. So, remove _ from form_dict
-	frappe.local.form_dict.pop("_", None)
 
 
 def handle_exception(e):
@@ -398,11 +403,7 @@ def handle_exception(e):
 
 def sync_database(rollback: bool) -> bool:
 	# if HTTP method would change server state, commit if necessary
-	if (
-		frappe.db
-		and (frappe.local.flags.commit or frappe.local.request.method in UNSAFE_HTTP_METHODS)
-		and frappe.db.transaction_writes
-	):
+	if frappe.db and (frappe.local.flags.commit or frappe.local.request.method in UNSAFE_HTTP_METHODS):
 		frappe.db.commit()
 		rollback = False
 	elif frappe.db:
@@ -412,7 +413,6 @@ def sync_database(rollback: bool) -> bool:
 	# update session
 	if session := getattr(frappe.local, "session_obj", None):
 		if session.update():
-			frappe.db.commit()
 			rollback = False
 
 	return rollback
@@ -448,6 +448,9 @@ if sentry_dsn := os.getenv("FRAPPE_SENTRY_DSN"):
 	if tracing_sample_rate := os.getenv("SENTRY_TRACING_SAMPLE_RATE"):
 		kwargs["traces_sample_rate"] = float(tracing_sample_rate)
 		application = SentryWsgiMiddleware(application)
+
+	if profiling_sample_rate := os.getenv("SENTRY_PROFILING_SAMPLE_RATE"):
+		kwargs["profiles_sample_rate"] = float(profiling_sample_rate)
 
 	sentry_sdk.init(
 		dsn=sentry_dsn,

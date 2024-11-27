@@ -13,6 +13,7 @@ from ldap3.core.exceptions import (
 	LDAPInvalidFilterError,
 	LDAPNoSuchObjectResult,
 )
+from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.hashed import hashed
 
 import frappe
@@ -183,7 +184,7 @@ class LDAPSettings(Document):
 			setattr(user, key, value)
 		user.save(ignore_permissions=True)
 
-	def sync_roles(self, user: "User", additional_groups: list = None):
+	def sync_roles(self, user: "User", additional_groups: list | None = None):
 		current_roles = {d.role for d in user.get("roles")}
 		if self.default_user_type == "System User":
 			needed_roles = {self.default_role}
@@ -203,7 +204,7 @@ class LDAPSettings(Document):
 
 		user.remove_roles(*roles_to_remove)
 
-	def create_or_update_user(self, user_data: dict, groups: list = None):
+	def create_or_update_user(self, user_data: dict, groups: list | None = None):
 		user: "User" = None
 		role: str = None
 
@@ -272,7 +273,7 @@ class LDAPSettings(Document):
 		if self.ldap_directory_server.lower() == "active directory":
 			ldap_object_class = "Group"
 			ldap_group_members_attribute = "member"
-			user_search_str = user.entry_dn
+			user_search_str = escape_filter_chars(user.entry_dn)
 
 		elif self.ldap_directory_server.lower() == "openldap":
 			ldap_object_class = "posixgroup"
